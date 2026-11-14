@@ -215,6 +215,8 @@ def main() -> int:
                     "right-click and select in it: the list must stay where it was scrolled (GitHub #411)")
     ap.add_argument("--files-places", action="store_true", help="with --fake-frame: the Files tab's Temporary files "
                     "and game saves locations, and the Move to… picker (GitHub #532)")
+    ap.add_argument("--files-pins", action="store_true", help="with --fake-frame: pinned folders in the Files tab's "
+                    "Locations (one whose drive is gone), a pinned folder open, and the Move to… picker's Pinned")
     ap.add_argument("--only", default=None, help="comma-separated step names to keep (e.g. monitor,monitor-details)")
     ap.add_argument("--linux", action="store_true", help="add two pretend arm64 Linux apps and render their pages")
     ap.add_argument("--links", action="store_true", help="install links: the Add games menu, the paste dialog, the "
@@ -438,6 +440,31 @@ def main() -> int:
                  ("files-move-saves", lambda a: a.files_view.move_picker.open(
                      a.files_view.saves_location(a.files_view.move_picker.loc)))]
         mouse = {"files-locations": scroll_locations}
+    if args.files_pins:  # pinned folders (views/files_pins.py)
+        def pin_folders(a):
+            from frameport.ui.views import files_pins
+
+            v = a.files_view
+            library.set_setting(files_pins.SETTING, {})  # the fake Frame's home is new every run
+            downloads = next(x for x in v.shared if x["id"] == "downloads")
+            files_pins.pin(a.target.frame, downloads, posixpath.join(downloads["path"], "Mods"))
+            files_pins.pin(a.target.frame, {"id": "drive:/run/media/USB"}, "/run/media/USB/Movies")  # unplugged
+            v.open_location(downloads)
+
+        def open_pin(a):
+            p, loc, _icon = a.files_view.pinned()[0]
+            a.files_view.open_pin(p, loc)
+
+        def move_picker(a):
+            v = a.files_view
+            v.open_location(next(x for x in v.shared if x["id"] == "documents"))
+            time.sleep(2)
+            v.move_to([e for e in v.entries if e.name == "Notes.pdf"])
+        steps = [("files-pins", lambda a: a.go("files")),
+                 ("files-pins-added", pin_folders),
+                 ("files-pins-open", open_pin),
+                 ("files-pins-menu", lambda a: a.popmenu.show(a.files_view.menu_actions(None))),
+                 ("files-pins-move", move_picker)]
     if args.files_scroll:  # GitHub #411: a right-click or a selection keeps the Files list where it was scrolled
         def long_folder(a):
             videos = os.path.join(a.target.frame.home, "Videos")

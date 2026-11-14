@@ -259,6 +259,8 @@ The **Files** tab copies files between your PC and the Frame: videos, documents,
 - **Videos**, **Downloads** and **Documents** are shared by every Quest game (`/sdcard/Movies`, `/sdcard/Download`,
   `/sdcard/Documents` inside the game).
 - **Game storage** holds each game's own files (game menu → **On the Frame** → **Add videos and files**).
+- Right-click a folder → **Pin to Locations** to keep it at the top of the Locations list and in **Move to…**.
+  Right-click the pin → **Unpin**.
 
 ## Backing up saves
 

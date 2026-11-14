@@ -41,7 +41,11 @@ Detailed device findings per game/issue: docs/DEVICE_NOTES.md (read before debug
     (`check_move` both ends) → agent `_files_move` (rename on one file system, else copy with progress lines + delete,
     a cut-off copy removed; nothing overwritten; Lepton's links refused; saves ends in the namespace, chowned to the
     destination folder's owner); Lepton's links in a game's storage can't be renamed/deleted/moved; replaced
-    the "Send files" dialog, game menu → "Add videos & files…" = `go("files", pkg)`; multi-select bar (download/
+    the "Send files" dialog, game menu → "Add videos & files…" = `go("files", pkg)`; pinned folders (`views/files_pins.py`, no
+    Flet: per-Frame setting `files.pins` = {screenshots.frame_id: [{loc, path}]}; "Pinned" group above the locations
+    and in Move to…, Pin/Unpin in a folder's and the empty space's right-click menu; pins follow renames/moves made in
+    FramePort, go with its deletes, show as unavailable when their location is gone (unplugged drive, uninstalled
+    game); none in a game's saves or /tmp; `ui_smoke.py --fake-frame --files-pins`); multi-select bar (download/
     move/delete); `ui_smoke.py --fake-frame --files-places` renders the new locations + picker; drag-and-drop from the OS via the `flet-dropzone` extension (Apache-2.0, Flutter `desktop_drop`), which
     only a `flet build` bundle contains: `files.dropzone_available()` keeps it out of source runs and the PyInstaller
     fallback, which would show an unknown control); screenshots (Steam screenshots on the Frame, `install/screenshots.py`

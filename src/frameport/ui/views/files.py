@@ -3,7 +3,8 @@
 Locations are the folders Quest games see (Videos / Downloads / Documents, shared by every game as /sdcard/Movies,
 /sdcard/Download, /sdcard/Documents), each installed Quest game's own storage (with its saves = internal storage
 as a link-like "Saves (internal storage)" entry at the top, through the agent in podman's namespace), PC VR/Linux
-install folders, extra drives, the Frame's home folder and /tmp. Everything runs over the app's SSH connection
+install folders, extra drives, the Frame's home folder and /tmp, with the user's pinned folders above them
+(views/files_pins.py). Everything runs over the app's SSH connection
 (SFTP, the agent for saves and moves); uploads, downloads and moves are jobs in the Activity panel. Persistent like
 the Library: the chosen location and folder survive switching tabs.
 """
@@ -20,6 +21,7 @@ from ...errors import explain
 from ...i18n import tr, tr_n
 from .. import components as C
 from .. import theme as T
+from . import files_pins
 from .files_dialog import human
 
 if TYPE_CHECKING:
@@ -115,6 +117,7 @@ class FilesView:
         self.where = C.meta("")
         self.notice = ft.Container(visible=False)  # what's special about the location (/tmp, a game's saves)
         self.saves_running: dict[str, bool] = {}  # package -> the game ran when its saves were opened
+        self._shown_pin: tuple[str, str] | None = None  # the pin the Locations column shows as open
         self.listing = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO, expand=True, on_scroll=self._remember_scroll,
                                  scroll_interval=100)
         self.scrolled: dict[str, float] = {}  # folder -> scroll offset, restored when going back to it (GitHub #411)
@@ -217,7 +220,8 @@ class FilesView:
         return ftd.Dropzone(content=content, expand=True, on_entered=entered, on_exited=exited, on_dropped=dropped)
 
     def _location_row(self, loc: dict, icon: str, sub: str = "") -> ft.Control:
-        selected = self.loc is not None and loc["id"] in (self.loc["id"], (self.loc.get("parent") or {}).get("id"))
+        selected = self.loc is not None and loc["id"] in (self.loc["id"], (self.loc.get("parent") or {}).get("id")) \
+            and self._shown_pin is None  # a pinned folder is open: its pin is the selected row
         ic = ft.Icon(icon, size=T.px(18))
         label = C.body(loc["label"], weight=ft.FontWeight.W_500)
         box = ft.Container(
@@ -256,13 +260,110 @@ class FilesView:
         return groups
 
     def _render_locations(self) -> None:
+        def heading(text: str) -> ft.Control:
+            return ft.Container(C.meta(text.upper()), padding=ft.Padding(T.S2, T.S3, 0, T.px(2)))
+
         rows = []
-        for heading, entries in self.location_groups():
-            if heading:
-                rows.append(ft.Container(C.meta(heading.upper()), padding=ft.Padding(T.S2, T.S3, 0, T.px(2))))
+        pinned = self.pinned()
+        self._shown_pin = self._open_pin()
+        if pinned:  # a line below: the shared folders after them have no heading of their own
+            rows.append(heading(tr("Pinned")))
+            rows.extend(self._pin_row(p, loc) for p, loc, _icon in pinned)
+            rows.append(ft.Divider(height=T.S3, color=T.BORDER))
+        for text, entries in self.location_groups():
+            if text:
+                rows.append(heading(text))
             rows.extend(self._location_row(loc, icon, sub) for loc, icon, sub in entries)
         self.locations.controls = rows
         C.update(self.locations)
+
+    # ---------------------------------------------------------------- pinned folders (views/files_pins.py)
+    def _frame(self):
+        return getattr(getattr(self.app, "target", None), "frame", None)
+
+    def _pin_key(self) -> tuple[str, str] | None:
+        """(location id, folder) of the open folder, as a pin would have it."""
+        return (self.loc["id"], posixpath.normpath(self.path)) if self.loc and self.path else None
+
+    def _open_pin(self) -> tuple[str, str] | None:
+        """The open folder's pin key when it's pinned."""
+        key, frame = self._pin_key(), self._frame()
+        return key if key and frame is not None and files_pins.is_pinned(frame, *key) else None
+
+    def pinned(self) -> list[tuple[dict, dict | None, str]]:
+        """(pin, its location, the location's icon) for each pinned folder; location None = not on the Frame now
+        (an uninstalled game, an unplugged drive). The Locations column and Move to… list them."""
+        frame = self._frame()
+        saved = files_pins.pins(frame) if frame is not None else []
+        if not saved:
+            return []
+        groups = self.location_groups()
+        return [(p, *(files_pins.find_location(groups, p["loc"]) or (None, ""))) for p in saved]
+
+    def _pin_row(self, p: dict, loc: dict | None) -> ft.Control:
+        ic = ft.Icon(ft.Icons.PUSH_PIN_ROUNDED, size=T.px(18))
+        label = C.body(files_pins.label(p["path"], loc), weight=ft.FontWeight.W_500, max_lines=1,
+                       overflow=ft.TextOverflow.ELLIPSIS)
+        sub = files_pins.where(p["path"], loc) if loc else tr("Not on the Frame now")
+        box = ft.Container(
+            ft.Row([ic, ft.Column([label, C.meta(sub)], spacing=0, expand=True)], spacing=T.S2),
+            padding=ft.Padding(T.S2, T.px(6), T.S2, T.px(6)), border_radius=T.RADIUS_SM, ink=True,
+            opacity=1.0 if loc else 0.5, on_click=lambda e: self.open_pin(p, loc))
+        C.selected_style(box, self._shown_pin == (p["loc"], p["path"]), ic, label)
+        return ft.GestureDetector(content=box, on_secondary_tap_down=lambda e: self.app.popmenu.show(
+            self.pin_actions(p, loc), at=e.global_position))
+
+    def pin_actions(self, p: dict, loc: dict | None) -> list[tuple | None]:
+        """The right-click menu of a pinned folder in the Locations column."""
+        return [*([(tr("Open"), ft.Icons.FOLDER_OPEN_ROUNDED, lambda ev: self.open_pin(p, loc))] if loc else []),
+                (tr("Unpin"), ft.Icons.CLOSE_ROUNDED, lambda ev: self.unpin(p["loc"], p["path"]))]
+
+    def open_pin(self, p: dict, loc: dict | None) -> None:
+        if loc is None:
+            self.app.toast(tr("{name} isn't on the Frame now. Right-click it to unpin it.")
+                           .format(name=files_pins.label(p["path"], None)), error=True)
+            return
+        self.open_location(loc, p["path"])
+
+    def _pin_action(self, path: str, here: bool) -> tuple | None:
+        """Pin/Unpin for a folder in the list (`here`: the open folder itself, from a right-click on empty space)."""
+        frame = self._frame()
+        if frame is None or not files_pins.can_pin(self.loc):
+            return None
+        if files_pins.is_pinned(frame, self.loc["id"], path):
+            return (tr("Unpin this folder") if here else tr("Unpin"), ft.Icons.CLOSE_ROUNDED,
+                    lambda ev: self.unpin(self.loc["id"], path))
+        return (tr("Pin this folder") if here else tr("Pin to Locations"), ft.Icons.PUSH_PIN_ROUNDED,
+                lambda ev: self.pin(path))
+
+    def pin(self, path: str) -> None:
+        frame = self._frame()
+        if frame is None or not files_pins.can_pin(self.loc):
+            return
+        files_pins.pin(frame, self.loc, path)
+        self._render_locations()
+
+    def unpin(self, loc_id: str, path: str) -> None:
+        frame = self._frame()
+        if frame is None:
+            return
+        files_pins.unpin(frame, loc_id, path)
+        self._render_locations()
+
+    def _pins_moved(self, src: dict, moved: dict[str, str], dest: dict) -> None:
+        """Pins follow folders renamed or moved in FramePort; moved where pins can't be (a game's saves), they go."""
+        frame = self._frame()
+        if frame is None or not moved:
+            return
+        changed = (files_pins.follow(frame, src["id"], moved, dest["id"]) if files_pins.can_pin(dest)
+                   else files_pins.forget(frame, src["id"], list(moved)))
+        if changed:
+            self._render_locations()
+
+    def _pins_deleted(self, loc: dict, paths: list[str]) -> None:
+        frame = self._frame()
+        if frame is not None and files_pins.forget(frame, loc["id"], paths):
+            self._render_locations()
 
     @staticmethod
     def _tmp_location() -> dict:
@@ -378,7 +479,14 @@ class FilesView:
                 self.app.toast((tr("Couldn't open the game's saves: {exc}") if loc.get("saves") else
                                 tr("Couldn't open the game's storage: {exc}")).format(exc=explain(exc)), error=True)
                 return
-            self.loc, self.path = loc, path or loc["path"]
+            from ...install.files import inside
+
+            try:
+                folder = inside(loc["path"], path) if path else loc["path"]
+            except ValueError:  # a pinned folder whose game storage moved elsewhere
+                self.app.toast(tr("That folder isn't in {label} anymore.").format(label=loc.get("label")), error=True)
+                return
+            self.loc, self.path = loc, folder
             self.selected.clear()
             for control in self.toolbar.controls[:3]:
                 control.disabled = not self._writable()
@@ -436,6 +544,8 @@ class FilesView:
             self.entries = entries
             self.selected &= {e.path for e in entries}
             self._render_listing()
+            if self._shown_pin != self._open_pin():
+                self._render_locations()  # into or out of a pinned folder: its pin shows as open
         self.app.run_bg(work)
 
     # ---------------------------------------------------------------- listing
@@ -561,6 +671,7 @@ class FilesView:
                       if any(self._selectable(x) for x in self.entries) else []),
                     (tr("Copy folder path"), ft.Icons.CONTENT_COPY_ROUNDED,
                      lambda ev: self.app.copy(self._shown_path(self.path))),
+                    *filter(None, [self._pin_action(self.path, here=True)]),
                     (tr("Refresh"), ft.Icons.REFRESH_ROUNDED, lambda ev: self.load())]
         if e.saves:
             return [(tr("Open"), ft.Icons.FOLDER_OPEN_ROUNDED, lambda ev: self.open_saves())]
@@ -579,6 +690,8 @@ class FilesView:
         if not several:
             out.append((tr("Copy path"), ft.Icons.CONTENT_COPY_ROUNDED, lambda ev: self.app.copy(self._shown_path(
                 e.path))))
+            if e.is_dir and (action := self._pin_action(e.path, here=False)):
+                out.append(action)
         out.append(None)
         if several:
             out.append((tr("Clear selection"), ft.Icons.CLOSE_ROUNDED, lambda ev: self._clear_selection()))
@@ -796,21 +909,28 @@ class FilesView:
     def rename(self, e) -> None:
         if not self._writable():
             return
+        loc = self.loc
+
+        def op(files, frame, name):
+            new = files.loc_rename(frame, loc, e.path, name)
+            if e.is_dir:
+                self._pins_moved(loc, {e.path: new}, loc)
         self._ask_name(tr("Rename {name}").format(name=e.name), tr("New name"), e.name, tr("Rename"),
-                       lambda name: self._fs(
-                           lambda files, frame: files.loc_rename(frame, self.loc, e.path, name)))
+                       lambda name: self._fs(lambda files, frame: op(files, frame, name)))
 
     def delete(self, items: list) -> None:
         if not self._writable():
             return
         names = ", ".join(x.name for x in items[:3]) + (" …" if len(items) > 3 else "")
         what = tr("folder and everything in it") if any(x.is_dir for x in items) else tr("file")
+        loc, paths = self.loc, [x.path for x in items]
+
+        def op(files, frame):
+            files.loc_delete(frame, loc, paths)
+            self._pins_deleted(loc, [x.path for x in items if x.is_dir])
         C.confirm(self.app.page, tr("Delete {names}?").format(names=names),
                   tr("This deletes the {what} on the Frame. It can't be undone.").format(what=what),
-                  tr("Delete"), lambda: (self.selected.difference_update(x.path for x in items),
-                                     self._fs(lambda files, frame: files.loc_delete(frame, self.loc,
-                                                                                    [x.path for x in items]))),
-                  danger=True)
+                  tr("Delete"), lambda: (self.selected.difference_update(paths), self._fs(op)), danger=True)
 
     def move_to(self, items: list) -> None:
         """Move to…: pick a folder in any location (views/files_move.py); the move is a job (it may copy)."""
@@ -828,6 +948,7 @@ class FilesView:
             from ...install import files
 
             r = files.move(app.target.frame, src, [x.path for x in items], dest, folder, job.reporter)
+            self._pins_moved(src, {x.path: posixpath.join(folder, x.name) for x in items if x.is_dir}, dest)
             self.selected.difference_update(x.path for x in items)
             self.load()
             return tr_n("Moved {n} item to {label}", "Moved {n} items to {label}", r["moved"],

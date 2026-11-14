@@ -1,6 +1,7 @@
-"""Files → Move to… (GitHub #532): pick a folder in any of the Files tab's locations (the same list, the same
-browsing, folders only) and move the chosen files and folders there. The move itself is a job (`FilesView.start_move`
-→ `install/files.move`): a rename on one file system, else a copy on the Frame and the originals deleted."""
+"""Files → Move to… (GitHub #532): pick a folder in any of the Files tab's locations (the same list with its pinned
+folders, the same browsing, folders only) and move the chosen files and folders there. The move itself is a job
+(`FilesView.start_move` → `install/files.move`): a rename on one file system, else a copy on the Frame and the
+originals deleted."""
 from __future__ import annotations
 
 import posixpath
@@ -12,6 +13,7 @@ from ...errors import explain
 from ...i18n import tr, tr_n
 from .. import components as C
 from .. import theme as T
+from . import files_pins
 
 if TYPE_CHECKING:
     from .files import FilesView
@@ -61,6 +63,20 @@ class MovePicker:
     # ---------------------------------------------------------------- locations
     def _render_locations(self) -> None:
         rows = []
+        pinned = [(p, loc) for p, loc, _icon in self.view.pinned() if loc and not loc.get("read_only")]
+        if pinned:
+            rows.append(ft.Container(C.meta(tr("Pinned").upper()), padding=ft.Padding(T.S2, T.S2, 0, T.px(2))))
+        for p, loc in pinned:
+            name = files_pins.label(p["path"], loc)
+            label = C.body(name, weight=ft.FontWeight.W_500, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
+            rows.append(ft.Container(
+                ft.Row([ft.Icon(ft.Icons.PUSH_PIN_ROUNDED, size=T.px(16)), ft.Container(label, expand=True)],
+                       spacing=T.S2),
+                padding=ft.Padding(T.S2, T.px(5), T.S2, T.px(5)), border_radius=T.RADIUS_SM, ink=True,
+                tooltip=files_pins.where(p["path"], loc) or name,
+                on_click=lambda e, x=loc, path=p["path"]: self.open(x, path)))
+        if pinned:
+            rows.append(ft.Divider(height=T.S2, color=T.BORDER))
         for heading, entries in destinations(self.view.location_groups()):
             if heading:
                 rows.append(ft.Container(C.meta(heading.upper()), padding=ft.Padding(T.S2, T.S2, 0, T.px(2))))
@@ -88,7 +104,11 @@ class MovePicker:
                 return
             self.loc = resolved
             self._render_locations()
-            self.cd(path or resolved["path"])
+            try:
+                self.cd(path or resolved["path"])
+            except ValueError:  # a pinned folder no longer inside its location
+                self.hint.value = tr("That folder isn't in {label} anymore.").format(label=resolved.get("label"))
+                C.update(self.hint)
         self.app.run_bg(work)
 
     # ---------------------------------------------------------------- folders
